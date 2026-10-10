@@ -1,0 +1,5 @@
+.env
+*.pem
+.aws/
+.DS_Store
+packaged-*.yaml
