@@ -1,7 +1,21 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Static website for L00213552 Maxamed Maxamed. Content is stored in a
-  private, encrypted S3 bucket and served over HTTPS through Amazon CloudFront.
+  Static website for an ATU student. A Lambda function writes the page into a
+  private, encrypted S3 bucket, and Amazon CloudFront serves it over HTTPS.
+
+Parameters:
+  StudentName:
+    Type: String
+    Default: Maxamed Maxamed
+    Description: Full name shown in the page header
+    AllowedPattern: '^[A-Za-z ]{1,60}$'
+    ConstraintDescription: Letters and spaces only, up to 60 characters
+  StudentNumber:
+    Type: String
+    Default: L00213552
+    Description: ATU L number shown in the page header
+    AllowedPattern: '^L[0-9]{8}$'
+    ConstraintDescription: Must be the letter L followed by 8 digits
 
 Resources:
   # Private bucket that stores the site content.
@@ -97,6 +111,154 @@ Resources:
             Condition:
               Bool:
                 aws:SecureTransport: "false"
+
+  # Log group for the content writer function, kept for 14 days to limit cost.
+  ContentWriterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-content-writer"
+      RetentionInDays: 14
+
+  # Least privilege role for the function. It can only write its own logs,
+  # manage objects in this bucket and clear this distribution's cache.
+  ContentWriterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: content-writer
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt ContentWriterLogGroup.Arn
+              - Sid: ManageSiteObjects
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: !Sub "${WebsiteBucket.Arn}/*"
+              - Sid: ListSiteVersions
+                Effect: Allow
+                Action: s3:ListBucketVersions
+                Resource: !GetAtt WebsiteBucket.Arn
+              - Sid: ClearCache
+                Effect: Allow
+                Action: cloudfront:CreateInvalidation
+                Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}"
+
+  # Writes index.html on create and update, and empties the bucket on delete
+  # so the whole stack can be removed cleanly.
+  ContentWriterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Writes the website page into S3 during deployment
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt ContentWriterRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      LoggingConfig:
+        LogGroup: !Ref ContentWriterLogGroup
+      Code:
+        ZipFile: |
+          import html
+          import time
+
+          import boto3
+          import cfnresponse
+
+          s3 = boto3.client("s3")
+          cloudfront = boto3.client("cloudfront")
+
+          PAGE = """<!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>CloudFormation Lab | {number}</title>
+          </head>
+          <body>
+            <header>
+              <h1>{number} {name}</h1>
+            </header>
+            <main>
+              <p>Static website stored in Amazon S3, served through Amazon CloudFront
+              and deployed with AWS CloudFormation.</p>
+              <p>This page was written by a Lambda function during deployment.</p>
+            </main>
+          </body>
+          </html>
+          """
+
+
+          def write_page(props):
+              """Build the page from the stack parameters and upload it."""
+              body = PAGE.format(
+                  number=html.escape(props["StudentNumber"]),
+                  name=html.escape(props["StudentName"]),
+              )
+              s3.put_object(
+                  Bucket=props["BucketName"],
+                  Key="index.html",
+                  Body=body.encode("utf-8"),
+                  ContentType="text/html; charset=utf-8",
+              )
+              # Clear the CloudFront cache so visitors see the new page straight away.
+              cloudfront.create_invalidation(
+                  DistributionId=props["DistributionId"],
+                  InvalidationBatch={
+                      "Paths": {"Quantity": 1, "Items": ["/*"]},
+                      "CallerReference": str(time.time()),
+                  },
+              )
+
+
+          def empty_bucket(bucket):
+              """Delete every object version so CloudFormation can remove the bucket."""
+              paginator = s3.get_paginator("list_object_versions")
+              for page in paginator.paginate(Bucket=bucket):
+                  items = page.get("Versions", []) + page.get("DeleteMarkers", [])
+                  objects = [{"Key": i["Key"], "VersionId": i["VersionId"]} for i in items]
+                  if objects:
+                      s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+
+
+          def handler(event, context):
+              props = event["ResourceProperties"]
+              physical_id = props["BucketName"] + "/index.html"
+              try:
+                  if event["RequestType"] in ("Create", "Update"):
+                      write_page(props)
+                  elif event["RequestType"] == "Delete":
+                      empty_bucket(props["BucketName"])
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_id)
+              except Exception as error:
+                  # Always reply, otherwise the stack waits up to an hour for a response.
+                  print(f"Failed: {error}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, physical_id)
+
+  # Custom resource that runs the function. Changing a parameter triggers
+  # an update, which rewrites the page.
+  SiteContent:
+    Type: Custom::SiteContent
+    Properties:
+      ServiceToken: !GetAtt ContentWriterFunction.Arn
+      BucketName: !Ref WebsiteBucket
+      DistributionId: !Ref WebsiteDistribution
+      StudentName: !Ref StudentName
+      StudentNumber: !Ref StudentNumber
 
 Outputs:
   WebsiteURL:
