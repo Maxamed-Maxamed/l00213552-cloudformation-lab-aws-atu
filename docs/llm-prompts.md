@@ -22,3 +22,6 @@ https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 - [Using Lambda with infrastructure as code (AWS Lambda Developer Guide)](https://docs.aws.amazon.com/lambda/latest/dg/foundation-iac.html)
 - [Custom resources (CloudFormation User Guide)](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/template-custom-resources.html)
 - [cfn-response module (CloudFormation User Guide)](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-lambda-function-code-cfnresponsemodule.html)
+- [What is Amazon VPC? (Amazon VPC User Guide)](https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html)
+- [VPCs and subnets (Amazon VPC User Guide)](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html)
+-
