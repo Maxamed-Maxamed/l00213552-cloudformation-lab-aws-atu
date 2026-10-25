@@ -1,25 +1,76 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Baseline static website on Amazon S3 for L00213552 Maxamed Maxamed.
-  Follows the AWS S3 static website tutorial. Improved in later versions.
+  Static website for L00213552 Maxamed Maxamed. Content is stored in a
+  private, encrypted S3 bucket and served over HTTPS through Amazon CloudFront.
 
 Resources:
-  # Bucket that stores the static pages and serves them as a website.
-  # No BucketName is set, so CloudFormation generates a unique one.
+  # Private bucket that stores the site content.
+  # All public access is blocked, so only CloudFront can read it.
   WebsiteBucket:
     Type: AWS::S3::Bucket
     Properties:
-      WebsiteConfiguration:
-        IndexDocument: index.html
-      # The S3 website endpoint needs a public bucket policy,
-      # so the two policy related blocks are switched off here.
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         IgnorePublicAcls: true
-        BlockPublicPolicy: false
-        RestrictPublicBuckets: false
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      # Encrypt every object at rest with S3 managed keys.
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      # Turn off ACLs so access is controlled only by the bucket policy.
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # Keep earlier versions of each file so a bad upload can be rolled back.
+      VersioningConfiguration:
+        Status: Enabled
 
-  # Lets anyone read objects in the bucket. Read only, no write access.
+  # Lets CloudFront sign its requests to the private bucket.
+  WebsiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        Description: Allows CloudFront to read the private website bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Public facing web service. Serves the site over HTTPS and caches it
+  # at edge locations close to visitors.
+  WebsiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "Static website for ${AWS::StackName}"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        # Edge locations in North America and Europe only, the lowest cost option.
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: WebsiteBucketOrigin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebsiteOriginAccessControl.Id
+            # Must be left empty when using Origin Access Control.
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: WebsiteBucketOrigin
+          # Any plain HTTP request is redirected to HTTPS.
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # AWS managed cache policy: CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          # AWS managed response headers policy: SecurityHeadersPolicy
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+
+  # Only this CloudFront distribution may read objects, and only over HTTPS.
   WebsiteBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -27,16 +78,33 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: PublicReadForWebsite
+          - Sid: AllowCloudFrontReadOnly
             Effect: Allow
-            Principal: "*"
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: s3:GetObject
             Resource: !Sub "${WebsiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}"
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt WebsiteBucket.Arn
+              - !Sub "${WebsiteBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
 
 Outputs:
   WebsiteURL:
-    Description: Address of the S3 static website endpoint
-    Value: !GetAtt WebsiteBucket.WebsiteURL
+    Description: HTTPS address of the website through CloudFront
+    Value: !Sub "https://${WebsiteDistribution.DomainName}"
+  DistributionId:
+    Description: CloudFront distribution ID, needed to clear the cache after updates
+    Value: !Ref WebsiteDistribution
   BucketName:
-    Description: Name of the bucket that holds the site content
+    Description: Name of the private bucket that holds the site content
     Value: !Ref WebsiteBucket
