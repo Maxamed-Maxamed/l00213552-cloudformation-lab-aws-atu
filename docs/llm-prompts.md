@@ -16,3 +16,6 @@ as required by the assignment brief.
 None yet.
 https://docs.aws.amazon.com/AmazonS3/latest/userguide/HostingWebsiteOnS3Setup.html
 https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+- [Restricting access to an Amazon S3 origin (CloudFront Developer Guide)](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html)
+- [Updating stacks using change sets (CloudFormation User Guide)](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-changesets.html)
+
