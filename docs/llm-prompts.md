@@ -19,3 +19,6 @@ https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 - [Restricting access to an Amazon S3 origin (CloudFront Developer Guide)](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html)
 - [Updating stacks using change sets (CloudFormation User Guide)](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-changesets.html)
 
+- [Using Lambda with infrastructure as code (AWS Lambda Developer Guide)](https://docs.aws.amazon.com/lambda/latest/dg/foundation-iac.html)
+- [Custom resources (CloudFormation User Guide)](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/template-custom-resources.html)
+- [cfn-response module (CloudFormation User Guide)](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-lambda-function-code-cfnresponsemodule.html)
