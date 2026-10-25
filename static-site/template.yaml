@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Baseline static website on Amazon S3 for L00213552 Maxamed Maxamed.
+  Follows the AWS S3 static website tutorial. Improved in later versions.
+
+Resources:
+  # Bucket that stores the static pages and serves them as a website.
+  # No BucketName is set, so CloudFormation generates a unique one.
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      # The S3 website endpoint needs a public bucket policy,
+      # so the two policy related blocks are switched off here.
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+
+  # Lets anyone read objects in the bucket. Read only, no write access.
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadForWebsite
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${WebsiteBucket.Arn}/*"
+
+Outputs:
+  WebsiteURL:
+    Description: Address of the S3 static website endpoint
+    Value: !GetAtt WebsiteBucket.WebsiteURL
+  BucketName:
+    Description: Name of the bucket that holds the site content
+    Value: !Ref WebsiteBucket
