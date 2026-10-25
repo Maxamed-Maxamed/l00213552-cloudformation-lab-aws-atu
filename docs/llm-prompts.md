@@ -14,3 +14,5 @@ as required by the assignment brief.
 ## Tutorials followed
 
 None yet.
+https://docs.aws.amazon.com/AmazonS3/latest/userguide/HostingWebsiteOnS3Setup.html
+https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
