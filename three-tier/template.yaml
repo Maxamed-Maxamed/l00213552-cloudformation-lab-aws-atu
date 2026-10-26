@@ -1,9 +1,23 @@
 AWSTemplateFormatVersion: "2010-09-09"
+# This file is an AWS CloudFormation template. CloudFormation reads the
+# sections below and creates the infrastructure in the order required by each
+# resource reference, so the whole three-tier environment can be deployed or
+# removed as one stack.
+#
+# Architecture overview:
+# 1. The VPC contains public, private web, private application, and isolated
+#    database subnets across two Availability Zones.
+# 2. Internet users reach the public Application Load Balancer (ALB), which
+#    forwards requests to the web Auto Scaling Group.
+# 3. The web tier forwards /api/ requests to the private internal ALB.
+# 4. The internal ALB forwards requests to the application Auto Scaling Group,
+#    which reads and updates data in the private Amazon RDS database.
+# Lines beginning with "#" are comments for people and are ignored by AWS.
 Description: >
-  Three tier architecture for L00213552 Maxamed Maxamed. Network layer, web
-  tier and application tier: a VPC across two availability zones, a public
-  load balancer in front of web servers, and an internal load balancer in
-  front of application servers, all in private subnets.
+  Three tier architecture for L00213552 Maxamed Maxamed. A VPC across two
+  availability zones with a web tier behind a public load balancer, an
+  application tier behind an internal load balancer, and a MySQL database
+  tier in isolated subnets.
 
 Parameters:
   # Deployment inputs let the same template be reused with different
@@ -40,6 +54,23 @@ Parameters:
     AllowedValues:
       - t3.micro
       - t3.small
+  DatabaseInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    Description: RDS instance class for the MySQL database
+    AllowedValues:
+      - db.t4g.micro
+      - db.t3.micro
+      - db.t4g.small
+  DatabaseMultiAz:
+    Type: String
+    Default: "false"
+    Description: >
+      true keeps a standby copy of the database in the second zone with
+      automatic failover. It doubles the database cost and takes longer to create.
+    AllowedValues:
+      - "true"
+      - "false"
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -427,6 +458,8 @@ Resources:
                 <p>Served by instance $INSTANCE_ID in $AZ.</p>
                 <h2>Application tier</h2>
                 <p id="app">Checking the application tier...</p>
+                <h2>Database tier</h2>
+                <p id="db">Checking the database tier...</p>
               </main>
               <script>
                 fetch("/api/info")
@@ -437,10 +470,16 @@ Resources:
                   .then(function (data) {
                     document.getElementById("app").textContent =
                       "Answered by instance " + data.instance + " in " + data.zone + ".";
+                    var db = data.database || {};
+                    document.getElementById("db").textContent = db.status === "connected"
+                      ? "Connected to " + db.engine + ". This page has been viewed " + db.visits + " times."
+                      : "The database tier is not available.";
                   })
                   .catch(function () {
                     document.getElementById("app").textContent =
                       "The application tier did not respond.";
+                    document.getElementById("db").textContent =
+                      "Unknown, because the application tier did not respond.";
                   });
               </script>
             </body>
@@ -637,6 +676,8 @@ Resources:
 
   AppLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
+    # New app servers must be allowed to read the database password.
+    DependsOn: AppDatabaseSecretPolicy
     Properties:
       LaunchTemplateName: !Sub "${AWS::StackName}-app"
       LaunchTemplateData:
@@ -669,13 +710,46 @@ Resources:
             trap '/opt/aws/bin/cfn-signal --exit-code 1 --stack ${AWS::StackName} --resource AppAutoScalingGroup --region ${AWS::Region}' ERR
 
             mkdir -p /opt/app
+
+            # Isolated Python environment with pinned library versions, so every
+            # server runs exactly the same code on the system Python 3.9.
+            python3 -m venv /opt/app/venv
+            /opt/app/venv/bin/pip install --quiet PyMySQL==1.1.1 boto3==1.35.99
+
+            # Amazon RDS certificate bundle, used to check the database is the
+            # real one before any password is sent.
+            curl -sSf -o /opt/app/rds-ca.pem https://truststore.pki.rds.amazonaws.com/${AWS::Region}/${AWS::Region}-bundle.pem
+
+            # Where to find the database. The password is not stored here: the
+            # API reads it from Secrets Manager when it needs it.
+            cat > /opt/app/config.json <<'EOF'
+            {
+              "host": "${Database.Endpoint.Address}",
+              "port": ${Database.Endpoint.Port},
+              "database": "labdb",
+              "secret_arn": "${Database.MasterUserSecret.SecretArn}",
+              "region": "${AWS::Region}",
+              "ca_bundle": "/opt/app/rds-ca.pem"
+            }
+            EOF
+
             cat > /opt/app/app.py <<'EOF'
-            """Application tier API. Reports which server and zone answered."""
+            """Application tier API. Reports which server answered and keeps a
+            visit counter in the MySQL database on the database tier."""
             import json
             import urllib.request
             from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+            import boto3
+            import pymysql
+
             IMDS = "http://169.254.169.254/latest"
+
+            with open("/opt/app/config.json") as config_file:
+                CONFIG = json.load(config_file)
+
+            secrets = boto3.client("secretsmanager", region_name=CONFIG["region"])
+            cached_login = None
 
 
             def metadata(path):
@@ -697,14 +771,81 @@ Resources:
             ZONE = metadata("placement/availability-zone")
 
 
+            def login(refresh=False):
+                """Read the database user and password from Secrets Manager.
+
+                The result is cached. RDS can rotate the password, so a rejected
+                login triggers one fresh read.
+                """
+                global cached_login
+                if cached_login is None or refresh:
+                    secret = secrets.get_secret_value(SecretId=CONFIG["secret_arn"])
+                    cached_login = json.loads(secret["SecretString"])
+                return cached_login
+
+
+            def connect(refresh=False):
+                """Open an encrypted connection that verifies the server certificate."""
+                details = login(refresh)
+                return pymysql.connect(
+                    host=CONFIG["host"],
+                    port=int(CONFIG["port"]),
+                    user=details["username"],
+                    password=details["password"],
+                    database=CONFIG["database"],
+                    connect_timeout=3,
+                    autocommit=True,
+                    ssl_ca=CONFIG["ca_bundle"],
+                    ssl_verify_cert=True,
+                    ssl_verify_identity=True,
+                )
+
+
+            def record_visit():
+                """Add one to the shared visit counter and return the new total."""
+                try:
+                    try:
+                        connection = connect()
+                    except pymysql.err.OperationalError as error:
+                        # 1045 means access denied, most likely after a password rotation.
+                        if error.args[0] != 1045:
+                            raise
+                        connection = connect(refresh=True)
+                    with connection:
+                        with connection.cursor() as cursor:
+                            cursor.execute(
+                                "CREATE TABLE IF NOT EXISTS visits "
+                                "(id INT PRIMARY KEY, total BIGINT NOT NULL)"
+                            )
+                            cursor.execute(
+                                "INSERT INTO visits (id, total) VALUES (1, 1) "
+                                "ON DUPLICATE KEY UPDATE total = total + 1"
+                            )
+                            cursor.execute("SELECT total FROM visits WHERE id = 1")
+                            total = cursor.fetchone()[0]
+                            cursor.execute("SELECT VERSION()")
+                            version = cursor.fetchone()[0]
+                    return {"status": "connected", "engine": "MySQL " + version, "visits": total}
+                except Exception as error:
+                    # Details go to the system journal; the page shows a simple message.
+                    print("Database error:", repr(error), flush=True)
+                    return {"status": "unavailable"}
+
+
             class Handler(BaseHTTPRequestHandler):
                 def do_GET(self):
-                    # The load balancer uses /health; the web tier uses /api/info
-                    # to display which application instance handled the request.
+                    # /health deliberately does not touch the database. If it did, a
+                    # database problem would make the load balancer mark every app
+                    # server unhealthy, and Auto Scaling would replace them for nothing.
                     if self.path == "/health":
                         self.reply(200, {"status": "ok"})
                     elif self.path == "/api/info":
-                        self.reply(200, {"tier": "application", "instance": INSTANCE_ID, "zone": ZONE})
+                        self.reply(200, {
+                            "tier": "application",
+                            "instance": INSTANCE_ID,
+                            "zone": ZONE,
+                            "database": record_visit(),
+                        })
                     else:
                         self.reply(404, {"error": "not found"})
 
@@ -729,7 +870,7 @@ Resources:
             Wants=network-online.target
 
             [Service]
-            ExecStart=/usr/bin/python3 /opt/app/app.py
+            ExecStart=/opt/app/venv/bin/python /opt/app/app.py
             DynamicUser=yes
             Restart=always
 
@@ -847,6 +988,97 @@ Resources:
           PredefinedMetricType: ASGAverageCPUUtilization
         TargetValue: 50
 
+  # ---------- Database tier ----------
+
+  # The database accepts MySQL connections only from the application servers.
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Database, accepts MySQL only from the application servers
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - Description: MySQL from the application servers only
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref AppServerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-database-sg"
+
+  # Tells RDS which subnets it may use: the isolated database subnets,
+  # which have no route to the internet in either direction.
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Isolated database subnets in two availability zones
+      SubnetIds:
+        - !Ref DatabaseSubnetA
+        - !Ref DatabaseSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-database-subnets"
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    # Lab data is disposable, so deleting the stack deletes the database
+    # without a final snapshot. Production would use Snapshot for both.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    # cfn-lint only accepts exact versions such as 8.4.11. AWS documents that
+    # a major version on its own is valid, and with automatic minor upgrades
+    # it stops the template and the running database drifting apart.
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3691
+    Properties:
+      Engine: mysql
+      # MySQL 8.4 is in standard support until July 2029. RDS picks a
+      # recent minor version and applies minor upgrades automatically.
+      EngineVersion: "8.4"
+      AutoMinorVersionUpgrade: true
+      # Never move into paid Extended Support without a decision.
+      EngineLifecycleSupport: open-source-rds-extended-support-disabled
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      AllocatedStorage: "20"
+      StorageType: gp3
+      StorageEncrypted: true
+      DBName: labdb
+      MasterUsername: labadmin
+      # RDS generates the password and keeps it in Secrets Manager, so it
+      # never appears in this template, the console or the logs.
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: !Ref DatabaseMultiAz
+      # Daily automated backups, kept for one day.
+      BackupRetentionPeriod: 1
+      DeleteAutomatedBackups: true
+      CopyTagsToSnapshot: true
+      # Off for the lab so the stack can be deleted at the end of each session.
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-database"
+
+  # Lets the application servers read the database password, and nothing else.
+  # The web servers have no access to it.
+  AppDatabaseSecretPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      RoleName: !Ref AppInstanceRole
+      PolicyName: read-database-secret
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !GetAtt Database.MasterUserSecret.SecretArn
+
 Outputs:
   # Stack outputs make the deployed network and entry-point addresses easy to
   # find after CloudFormation finishes creating the stack.
@@ -862,3 +1094,9 @@ Outputs:
   AppLoadBalancerDns:
     Description: Private address of the internal application load balancer
     Value: !GetAtt AppLoadBalancer.DNSName
+  DatabaseEndpoint:
+    Description: Private address of the MySQL database
+    Value: !GetAtt Database.Endpoint.Address
+  DatabaseSecretArn:
+    Description: Secrets Manager secret that holds the database password
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
