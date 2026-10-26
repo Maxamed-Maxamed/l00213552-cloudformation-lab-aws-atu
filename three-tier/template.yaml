@@ -1,11 +1,13 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Three tier architecture for L00213552 Maxamed Maxamed. Network layer and
-  web tier: a VPC across two availability zones, a public load balancer and
-  an Auto Scaling group of web servers in private subnets.
+  Three tier architecture for L00213552 Maxamed Maxamed. Network layer, web
+  tier and application tier: a VPC across two availability zones, a public
+  load balancer in front of web servers, and an internal load balancer in
+  front of application servers, all in private subnets.
 
 Parameters:
-  # These values can be overridden when the stack is created or updated.
+  # Deployment inputs let the same template be reused with different
+  # networks, student details, instance sizes, or Amazon Linux AMI versions.
   VpcCidr:
     Type: String
     Default: 10.0.0.0/16
@@ -31,6 +33,13 @@ Parameters:
     AllowedValues:
       - t3.micro
       - t3.small
+  AppInstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type for the application servers
+    AllowedValues:
+      - t3.micro
+      - t3.small
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -39,11 +48,12 @@ Parameters:
 Resources:
   # ---------- VPC and internet access ----------
 
-  # The VPC is the private network boundary for every resource in this stack.
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
+      # Creates the isolated network that contains all four tiers.
       CidrBlock: !Ref VpcCidr
+      # DNS is required for instance metadata names and load balancer DNS names.
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
@@ -60,19 +70,21 @@ Resources:
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
+      # Attaches the internet gateway to this VPC so public routes can use it.
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
   # ---------- Subnets: two per tier, one in each availability zone ----------
   # Fn::Cidr splits the VPC range into eight /24 blocks, so no addresses
   # are typed by hand and they can never overlap.
-  # Each subnet uses a different index from that generated list.
 
   PublicSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
+      # Selects the first availability zone returned for the deployment region.
       AvailabilityZone: !Select [0, !GetAZs ""]
+      # Selects the first of eight non-overlapping /24 subnet ranges.
       CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 8, 8]]
       # Nothing launched here gets a public IP automatically.
       MapPublicIpOnLaunch: false
@@ -84,6 +96,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
+      # The second zone keeps the public entry point available if one zone fails.
       AvailabilityZone: !Select [1, !GetAZs ""]
       CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 8, 8]]
       MapPublicIpOnLaunch: false
@@ -95,6 +108,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
+      # Web servers stay private; only the public load balancer is internet-facing.
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 8, 8]]
       Tags:
@@ -115,6 +129,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
+      # Application instances are isolated from direct internet traffic.
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Select [4, !Cidr [!Ref VpcCidr, 8, 8]]
       Tags:
@@ -135,6 +150,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
+      # Reserved for the data tier, with no default route to the internet.
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Select [6, !Cidr [!Ref VpcCidr, 8, 8]]
       Tags:
@@ -167,6 +183,8 @@ Resources:
   NatGateway:
     Type: AWS::EC2::NatGateway
     Properties:
+      # The NAT gateway has a public address but is used only for outbound
+      # connections from private web and application subnets.
       AllocationId: !GetAtt NatGatewayEip.AllocationId
       SubnetId: !Ref PublicSubnetA
       Tags:
@@ -189,6 +207,7 @@ Resources:
     DependsOn: InternetGatewayAttachment
     Properties:
       RouteTableId: !Ref PublicRouteTable
+      # Sends internet-bound traffic to the attached internet gateway.
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
@@ -217,6 +236,8 @@ Resources:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId: !Ref PrivateRouteTable
+      # Allows private instances to download updates without accepting inbound
+      # connections from the internet.
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NatGateway
 
@@ -272,6 +293,7 @@ Resources:
     Type: AWS::EC2::VPCEndpoint
     Properties:
       VpcId: !Ref Vpc
+      # Keeps S3 traffic on AWS networking instead of sending it through NAT.
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
       VpcEndpointType: Gateway
       RouteTableIds:
@@ -286,6 +308,7 @@ Resources:
       GroupDescription: Public load balancer, accepts HTTP from the internet
       VpcId: !Ref Vpc
       SecurityGroupIngress:
+        # This is the single internet entry point for the web tier.
         - Description: HTTP from anywhere
           IpProtocol: tcp
           FromPort: 80
@@ -304,6 +327,8 @@ Resources:
       GroupDescription: Web servers, accept HTTP only from the public load balancer
       VpcId: !Ref Vpc
       SecurityGroupIngress:
+        # Referencing the load balancer SG allows only load balancer traffic,
+        # regardless of the load balancer's changing private IP addresses.
         - Description: HTTP from the public load balancer only
           IpProtocol: tcp
           FromPort: 80
@@ -321,6 +346,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
+        # Allows EC2 to assume this role when the instance starts.
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
@@ -328,6 +354,7 @@ Resources:
               Service: ec2.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
+        # Enables Systems Manager access without opening SSH to the internet.
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 
   WebInstanceProfile:
@@ -343,6 +370,8 @@ Resources:
     Properties:
       LaunchTemplateName: !Sub "${AWS::StackName}-web"
       LaunchTemplateData:
+        # Defines the AMI, size, permissions, networking, and startup script
+        # used whenever the web Auto Scaling group launches an instance.
         ImageId: !Ref LatestAmiId
         InstanceType: !Ref WebInstanceType
         IamInstanceProfile:
@@ -393,15 +422,40 @@ Resources:
                 <h1>${StudentNumber} ${StudentName}</h1>
               </header>
               <main>
-                <p>Web tier of a three tier architecture deployed with AWS CloudFormation.</p>
+                <p>Three tier architecture deployed with AWS CloudFormation.</p>
+                <h2>Web tier</h2>
                 <p>Served by instance $INSTANCE_ID in $AZ.</p>
+                <h2>Application tier</h2>
+                <p id="app">Checking the application tier...</p>
               </main>
+              <script>
+                fetch("/api/info")
+                  .then(function (response) {
+                    if (!response.ok) { throw new Error(response.status); }
+                    return response.json();
+                  })
+                  .then(function (data) {
+                    document.getElementById("app").textContent =
+                      "Answered by instance " + data.instance + " in " + data.zone + ".";
+                  })
+                  .catch(function () {
+                    document.getElementById("app").textContent =
+                      "The application tier did not respond.";
+                  });
+              </script>
             </body>
             </html>
             EOF
 
             # Page the load balancer checks to decide whether this server is healthy.
             echo "ok" > /var/www/html/health
+
+            # Pass every request under /api/ to the internal application load
+            # balancer. The browser never talks to the application tier directly.
+            cat > /etc/httpd/conf.d/app-proxy.conf <<EOF
+            ProxyPass "/api/" "http://${AppLoadBalancer.DNSName}/api/"
+            ProxyPassReverse "/api/" "http://${AppLoadBalancer.DNSName}/api/"
+            EOF
 
             systemctl enable --now httpd
 
@@ -433,6 +487,8 @@ Resources:
   WebTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
+      # Registers web instances and removes them from service when /health
+      # does not return HTTP 200.
       VpcId: !Ref Vpc
       Protocol: HTTP
       Port: 80
@@ -454,6 +510,8 @@ Resources:
   WebListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
+      # Forwards requests received on the public load balancer to healthy
+      # instances in the web target group.
       LoadBalancerArn: !Ref WebLoadBalancer
       Protocol: HTTP
       Port: 80
@@ -504,6 +562,7 @@ Resources:
   WebCpuScalingPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
+      # Auto Scaling adjusts capacity to keep the group's average CPU near 50%.
       AutoScalingGroupName: !Ref WebAutoScalingGroup
       PolicyType: TargetTrackingScaling
       TargetTrackingConfiguration:
@@ -511,8 +570,286 @@ Resources:
           PredefinedMetricType: ASGAverageCPUUtilization
         TargetValue: 50
 
+  # ---------- Application tier: security groups ----------
+
+  # The internal load balancer accepts traffic only from the web servers.
+  AppLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Internal load balancer, accepts HTTP only from the web servers
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        # Only the web tier may call the internal application load balancer.
+        - Description: HTTP from the web servers only
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref WebServerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-app-alb-sg"
+
+  # Application servers accept traffic on port 8080 only from the internal
+  # load balancer. No SSH rule, as on the web tier.
+  AppServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Application servers, accept port 8080 only from the internal load balancer
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        # The application port is reachable only through the internal load
+        # balancer, not from the web instances or the public network directly.
+        - Description: Application port from the internal load balancer only
+          IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref AppLoadBalancerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-app-server-sg"
+
+  # ---------- Application tier: server permissions ----------
+
+  # Separate role from the web tier, so each tier can be given only the
+  # permissions it needs. The database step adds access to the password here.
+  AppInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        # Allows the application EC2 instances to use this role.
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Provides Systems Manager access without requiring SSH.
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AppInstanceRole
+
+  # ---------- Application tier: server blueprint ----------
+
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-app"
+      LaunchTemplateData:
+        # Defines the application instances that the application Auto Scaling
+        # group creates in the private application subnets.
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref AppInstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt AppInstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref AppServerSecurityGroup
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 8
+              VolumeType: gp3
+              Encrypted: true
+              DeleteOnTermination: true
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            # Runs once at first boot. Installs a small Python API as a system
+            # service and tells CloudFormation this server is ready.
+            set -euxo pipefail
+
+            dnf install -y aws-cfn-bootstrap
+            trap '/opt/aws/bin/cfn-signal --exit-code 1 --stack ${AWS::StackName} --resource AppAutoScalingGroup --region ${AWS::Region}' ERR
+
+            mkdir -p /opt/app
+            cat > /opt/app/app.py <<'EOF'
+            """Application tier API. Reports which server and zone answered."""
+            import json
+            import urllib.request
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+            IMDS = "http://169.254.169.254/latest"
+
+
+            def metadata(path):
+                """Read instance metadata using an IMDSv2 session token."""
+                token_request = urllib.request.Request(
+                    IMDS + "/api/token",
+                    method="PUT",
+                    headers={"X-aws-ec2-metadata-token-ttl-seconds": "300"},
+                )
+                token = urllib.request.urlopen(token_request, timeout=2).read().decode()
+                request = urllib.request.Request(
+                    IMDS + "/meta-data/" + path,
+                    headers={"X-aws-ec2-metadata-token": token},
+                )
+                return urllib.request.urlopen(request, timeout=2).read().decode()
+
+
+            INSTANCE_ID = metadata("instance-id")
+            ZONE = metadata("placement/availability-zone")
+
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    # The load balancer uses /health; the web tier uses /api/info
+                    # to display which application instance handled the request.
+                    if self.path == "/health":
+                        self.reply(200, {"status": "ok"})
+                    elif self.path == "/api/info":
+                        self.reply(200, {"tier": "application", "instance": INSTANCE_ID, "zone": ZONE})
+                    else:
+                        self.reply(404, {"error": "not found"})
+
+                def reply(self, status, body):
+                    data = json.dumps(body).encode()
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+
+
+            ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+            EOF
+
+            # Run the API as a service under a throwaway system user, not root,
+            # and restart it automatically if it ever stops.
+            cat > /etc/systemd/system/app.service <<'EOF'
+            [Unit]
+            Description=Three tier lab application API
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            ExecStart=/usr/bin/python3 /opt/app/app.py
+            DynamicUser=yes
+            Restart=always
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl enable --now app
+
+            # Wait until the API answers before reporting ready.
+            for attempt in $(seq 1 30); do
+              curl -sf http://localhost:8080/health && break
+              sleep 2
+            done
+            curl -sf http://localhost:8080/health
+
+            /opt/aws/bin/cfn-signal --exit-code 0 --stack ${AWS::StackName} --resource AppAutoScalingGroup --region ${AWS::Region}
+
+  # ---------- Application tier: internal load balancer ----------
+
+  # Internal scheme: it only has private addresses, so nothing on the
+  # internet can reach it.
+  AppLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      # The internal scheme gives this load balancer private addresses only.
+      Type: application
+      Scheme: internal
+      Subnets:
+        - !Ref AppSubnetA
+        - !Ref AppSubnetB
+      SecurityGroups:
+        - !Ref AppLoadBalancerSecurityGroup
+      LoadBalancerAttributes:
+        - Key: routing.http.drop_invalid_header_fields.enabled
+          Value: "true"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-app-alb"
+
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      # Sends requests to application instances on their Python API port.
+      VpcId: !Ref Vpc
+      Protocol: HTTP
+      Port: 8080
+      TargetType: instance
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-app-tg"
+
+  AppListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      # Routes internal load balancer requests to healthy application servers.
+      LoadBalancerArn: !Ref AppLoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppTargetGroup
+
+  # ---------- Application tier: Auto Scaling ----------
+
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: PrivateDefaultRoute
+    CreationPolicy:
+      ResourceSignal:
+        Count: 2
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT10M
+        WaitOnResourceSignals: true
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref AppSubnetA
+        - !Ref AppSubnetB
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      MinSize: "2"
+      MaxSize: "4"
+      TargetGroupARNs:
+        - !Ref AppTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-app"
+          PropagateAtLaunch: true
+
+  AppCpuScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      # Adds or removes application instances as average CPU changes.
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50
+
 Outputs:
-  # CloudFormation displays these values after a successful stack deployment.
+  # Stack outputs make the deployed network and entry-point addresses easy to
+  # find after CloudFormation finishes creating the stack.
   VpcId:
     Description: ID of the three tier VPC
     Value: !Ref Vpc
@@ -522,3 +859,6 @@ Outputs:
   WebURL:
     Description: Address of the web tier through the public load balancer
     Value: !Sub "http://${WebLoadBalancer.DNSName}"
+  AppLoadBalancerDns:
+    Description: Private address of the internal application load balancer
+    Value: !GetAtt AppLoadBalancer.DNSName
