@@ -1,0 +1,47 @@
+# Checks every CloudFormation template with cfn-lint, so a broken template
+# is caught on GitHub before anyone deploys it to AWS.
+name: CloudFormation lint
+
+on:
+  # Every pull request into main, and every push that lands on main.
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  # Allows a manual run from the Actions tab.
+  workflow_dispatch:
+
+# The job only needs to read the code. No write access, no AWS credentials.
+permissions:
+  contents: read
+
+jobs:
+  # This job validates both templates independently so an error in either
+  # template causes the workflow to fail before the change is merged.
+  cfn-lint:
+    name: Lint CloudFormation templates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Makes the repository files available to the following steps.
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      # cfn-lint runs on Python, so the workflow selects the Python version
+      # used to install and run the linter.
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Pinned to the version used locally, so CI and local results match.
+      - name: Install cfn-lint
+        run: pip install "cfn-lint==1.58.0"
+
+      # Validate the static website CloudFormation template in us-east-1.
+      - name: Lint the static website template
+        run: cfn-lint --regions us-east-1 -- static-site/template.yaml
+
+      # Validate the three-tier CloudFormation template in us-east-1.
+      - name: Lint the three tier template
+        run: cfn-lint --regions us-east-1 -- three-tier/template.yaml
