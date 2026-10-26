@@ -5,6 +5,8 @@ MSc Computing in DevOps, Atlantic Technological University
 
 [![CloudFormation lint](https://github.com/Maxamed-Maxamed/l00213552-cloudformation-lab-aws-atu/actions/workflows/cfn-lint.yml/badge.svg)](https://github.com/Maxamed-Maxamed/l00213552-cloudformation-lab-aws-atu/actions/workflows/cfn-lint.yml)
 
+Live site: https://d1j2x9jtaw4qao.cloudfront.net
+
 ## Contents
 
 1. [Introduction](#1-introduction)
