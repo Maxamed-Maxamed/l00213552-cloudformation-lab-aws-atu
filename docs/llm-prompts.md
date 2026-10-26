@@ -29,3 +29,5 @@ https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 - [https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/MySQL.Concepts.VersionMgmt.html](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/MySQL.Concepts.VersionMgmt.html)
 - [MySQL 8.0 End-of-Life and RDS Extended Support](https://ecorpit.com/mysql-8-0-eol-rds-extended-support-cost-migration-2026/)
 - [How to install Python 3 and boto3 on Amazon EC2](https://repost.aws/knowledge-center/ec2-linux-python3-boto3)
+- [Password management with Amazon RDS and AWS Secrets Manager (Amazon RDS User Guide)](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-secrets-manager.html)
+- [MySQL on Amazon RDS versions (Amazon RDS User Guide)](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/MySQL.Concepts.VersionMgmt.html)
