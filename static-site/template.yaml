@@ -21,7 +21,7 @@ Resources:
   # Private bucket that stores the site content.
   # All public access is blocked, so only CloudFront can read it.
   WebsiteBucket:
-    Type: AWS::S3::Buckett
+    Type: AWS::S3::Bucket
     Properties:
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
