@@ -13,7 +13,6 @@ as required by the assignment brief.
 
 ## Tutorials followed
 
-None yet.
 https://docs.aws.amazon.com/AmazonS3/latest/userguide/HostingWebsiteOnS3Setup.html
 https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 - [Restricting access to an Amazon S3 origin (CloudFront Developer Guide)](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html)
@@ -24,4 +23,5 @@ https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 - [cfn-response module (CloudFormation User Guide)](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-lambda-function-code-cfnresponsemodule.html)
 - [What is Amazon VPC? (Amazon VPC User Guide)](https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html)
 - [VPCs and subnets (Amazon VPC User Guide)](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html)
--
+- [Auto Scaling group with a load balancer (Amazon EC2 Auto Scaling User Guide)](https://docs.aws.amazon.com/autoscaling/ec2/userguide/autoscaling-load-balancer.html)
+- [cfn-signal (CloudFormation User Guide)](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-signal.html)
